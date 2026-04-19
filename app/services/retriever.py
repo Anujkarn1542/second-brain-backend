@@ -14,23 +14,41 @@ model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
 
 def search_chunks(question: str, document_id: str | None, top_k: int = 5) -> list[dict]:
-    if document_id:
-        collections = [get_or_create_collection(document_id)]
-    else:
-        all_cols = chroma_client.list_collections()
-        collections = [chroma_client.get_collection(col.name) for col in all_cols]
+    try:
+        if document_id:
+            collections = [get_or_create_collection(document_id)]
+        else:
+            all_cols = chroma_client.list_collections()
+            if not all_cols:
+                return []
+
+            collections = []
+            for col in all_cols:
+                try:
+                    collections.append(chroma_client.get_collection(col.name))
+                except Exception:
+                    continue
+
+    except Exception:
+        return []
 
     all_results = []
 
     for collection in collections:
         try:
+            count = collection.count()
+            if count == 0:
+                continue
+
             results = collection.query(
                 query_texts=[question],
-                n_results=min(top_k, collection.count()),
+                n_results=min(top_k, count),
                 include=["documents", "metadatas", "distances"],
             )
+
             if not results["documents"] or not results["documents"][0]:
                 continue
+
             for text, metadata, distance in zip(
                 results["documents"][0],
                 results["metadatas"][0],
@@ -40,14 +58,14 @@ def search_chunks(question: str, document_id: str | None, top_k: int = 5) -> lis
                     "text": text,
                     "page_number": metadata.get("page_number", 1),
                     "document_name": metadata.get("document_name", "Unknown"),
-                    "score": 1 - distance,
+                    "score": round(1 - distance, 3),
                 })
+
         except Exception:
             continue
 
     all_results.sort(key=lambda x: x["score"], reverse=True)
     return all_results[:top_k]
-
 
 def build_context(chunks: list[dict]) -> str:
     parts = []
@@ -69,25 +87,25 @@ def get_sources_from_chunks(chunks: list[dict]) -> list[Source]:
                 document_name=chunk["document_name"],
                 page_number=chunk["page_number"],
                 snippet=chunk["text"][:150] + "...",
+                score=chunk.get("score", 0.0),   # ← pass score
             ))
     return sources
 
-
 def generate_answer(question: str, chunks: list[dict]) -> tuple[str, list[Source]]:
     if not chunks:
-        return (
-            "I couldn't find relevant information in your documents.",
-            []
-        )
-    context = build_context(chunks)
-    prompt = f"""
+        return ("I couldn't find relevant information in your documents.", [])
+
+    try:
+        context = build_context(chunks)
+
+        prompt = f"""
 You are an AI assistant that answers questions based ONLY on the provided document.
 
 IMPORTANT RULES:
-- If user asks for "all text", "summarize", or "list questions", try to infer from context
-- If partial information exists, still answer using available content
-- Do NOT say "not found" unless absolutely nothing relevant exists
-- Be helpful and interpret user intent
+- If user asks for summarize, explain, or list points, help using context
+- Use only context
+- If no answer exists, say clearly
+- Be concise and helpful
 
 DOCUMENT CONTEXT:
 {context}
@@ -98,9 +116,15 @@ QUESTION:
 ANSWER:
 """
 
-    response = model.generate_content(prompt)
-    return response.text or "", get_sources_from_chunks(chunks)
+        response = model.generate_content(prompt)
 
+        return response.text or "No response generated.", get_sources_from_chunks(chunks)
+
+    except Exception:
+        return (
+            "Something went wrong while generating the answer. Please try again.",
+            []
+        )
 
 def generate_answer_stream(question: str, chunks: list[dict]) -> Generator[str, None, None]:
     """

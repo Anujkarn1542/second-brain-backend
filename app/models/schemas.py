@@ -19,6 +19,7 @@ class Source(BaseModel):
     document_name: str
     page_number: int
     snippet: str
+    score: float = 0.0   # ← add this
 
 
 class QueryResponse(BaseModel):
