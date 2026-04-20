@@ -8,6 +8,9 @@ from app.models.schemas import Source
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+print("RAW KEY:", repr(GEMINI_API_KEY))
+print("STARTS WITH:", GEMINI_API_KEY[:8] if GEMINI_API_KEY else "NONE")
+print("LENGTH:", len(GEMINI_API_KEY) if GEMINI_API_KEY else 0)
 genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel("gemini-2.5-flash-lite")
@@ -55,18 +58,21 @@ def search_chunks(question: str, document_id: str | None, top_k: int = 5) -> lis
                 results["metadatas"][0],
                 results["distances"][0],
             ):
-                all_results.append({
-                    "text": text,
-                    "page_number": metadata.get("page_number", 1),
-                    "document_name": metadata.get("document_name", "Unknown"),
-                    "score": round(1 - distance, 3),
-                })
+                all_results.append(
+                    {
+                        "text": text,
+                        "page_number": metadata.get("page_number", 1),
+                        "document_name": metadata.get("document_name", "Unknown"),
+                        "score": round(1 - distance, 3),
+                    }
+                )
 
         except Exception:
             continue
 
     all_results.sort(key=lambda x: x["score"], reverse=True)
     return all_results[:top_k]
+
 
 def build_context(chunks: list[dict]) -> str:
     parts = []
@@ -125,12 +131,14 @@ ANSWER:
 
         response = model.generate_content(prompt)
 
-        return response.text or "No response generated.", get_sources_from_chunks(chunks)
+        return response.text or "No response generated.", get_sources_from_chunks(
+            chunks
+        )
 
     except Exception:
         return (
             "Something went wrong while generating the answer. Please try again.",
-            []
+            [],
         )
 
 
@@ -162,8 +170,9 @@ Answer:"""
         for chunk in response:
             if chunk.text:
                 yield chunk.text
-    # except Exception as e:
-    #     print("GEMINI ERROR:", repr(e))
-    #     yield f"Gemini Error: {str(e)}"
-    except Exception:
-        yield "Something went wrong generating the response. Please try again."
+    except Exception as e:
+        print("GEMINI ERROR:", repr(e))
+        print("KEY LOADED:", GEMINI_API_KEY[:10] if GEMINI_API_KEY else "NO KEY")
+        yield f"Gemini Error: {str(e)}"
+    # except Exception:
+    #     yield "Something went wrong generating the response. Please try again."
