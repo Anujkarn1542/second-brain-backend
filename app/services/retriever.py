@@ -11,6 +11,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel("gemini-2.5-flash-lite")
+# model = genai.GenerativeModel("gemini-1.5-flash")
 
 
 def search_chunks(question: str, document_id: str | None, top_k: int = 5) -> list[dict]:
@@ -83,13 +84,19 @@ def get_sources_from_chunks(chunks: list[dict]) -> list[Source]:
         key = (chunk["document_name"], chunk["page_number"])
         if key not in seen:
             seen.add(key)
-            sources.append(Source(
-                document_name=chunk["document_name"],
-                page_number=chunk["page_number"],
-                snippet=chunk["text"][:150] + "...",
-                score=chunk.get("score", 0.0),   # ← pass score
-            ))
+            # Clamp score between 0 and 1, default 0 if missing
+            raw_score = chunk.get("score", 0.0)
+            safe_score = max(0.0, min(1.0, float(raw_score)))
+            sources.append(
+                Source(
+                    document_name=chunk["document_name"],
+                    page_number=chunk["page_number"],
+                    snippet=chunk["text"][:150] + "...",
+                    score=safe_score,
+                )
+            )
     return sources
+
 
 def generate_answer(question: str, chunks: list[dict]) -> tuple[str, list[Source]]:
     if not chunks:
@@ -126,23 +133,22 @@ ANSWER:
             []
         )
 
-def generate_answer_stream(question: str, chunks: list[dict]) -> Generator[str, None, None]:
-    """
-    Streams the answer token by token using Gemini's stream mode.
-    Yields raw text chunks as they arrive.
-    """
+
+def generate_answer_stream(
+    question: str, chunks: list[dict]
+) -> Generator[str, None, None]:
     if not chunks:
         yield "I couldn't find relevant information in your documents."
         return
 
     context = build_context(chunks)
-    prompt = f"""You are a helpful assistant that answers questions strictly based on the provided document context.
+    prompt = f"""You are a helpful assistant answering questions strictly based on provided document context.
 
 Rules:
 - Only use information from the context below
-- If the context doesn't contain the answer, say "I couldn't find this in the uploaded documents"
+- If context doesn't contain the answer say "I couldn't find this in the uploaded documents"
 - Be concise and direct
-- Do not make up information
+- Never make up information
 
 Context:
 {context}
@@ -151,7 +157,13 @@ Question: {question}
 
 Answer:"""
 
-    response = model.generate_content(prompt, stream=True)
-    for chunk in response:
-        if chunk.text:
-            yield chunk.text
+    try:
+        response = model.generate_content(prompt, stream=True)
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
+    # except Exception as e:
+    #     print("GEMINI ERROR:", repr(e))
+    #     yield f"Gemini Error: {str(e)}"
+    except Exception:
+        yield "Something went wrong generating the response. Please try again."

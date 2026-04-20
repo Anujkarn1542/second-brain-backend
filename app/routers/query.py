@@ -16,7 +16,6 @@ router = APIRouter(prefix="/query", tags=["query"])
 async def query_documents(request: QueryRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
-
     chunks = search_chunks(
         question=request.question,
         document_id=request.document_id,
@@ -28,15 +27,6 @@ async def query_documents(request: QueryRequest):
 
 @router.post("/stream")
 async def query_documents_stream(request: QueryRequest):
-    """
-    Streams the answer as Server-Sent Events (SSE).
-    Frontend reads this as a stream and appends words one by one.
-
-    SSE format:
-      data: {"type": "chunk", "content": "Hello"}
-      data: {"type": "sources", "sources": [...]}
-      data: {"type": "done"}
-    """
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
@@ -48,19 +38,36 @@ async def query_documents_stream(request: QueryRequest):
     sources = get_sources_from_chunks(chunks)
 
     def event_generator():
-        # Stream text chunks
-        for text_piece in generate_answer_stream(request.question, chunks):
-            data = json.dumps({"type": "chunk", "content": text_piece})
-            yield f"data: {data}\n\n"
+        try:
+            for text_piece in generate_answer_stream(request.question, chunks):
+                data = json.dumps({"type": "chunk", "content": text_piece})
+                yield f"data: {data}\n\n"
+        except Exception:
+            error_data = json.dumps(
+                {
+                    "type": "chunk",
+                    "content": "Error generating response. Please try again.",
+                }
+            )
+            yield f"data: {error_data}\n\n"
 
-        # Send sources after text is done
-        sources_data = json.dumps({
-            "type": "sources",
-            "sources": [s.model_dump() for s in sources]
-        })
+        # Serialize sources with score explicitly as float
+        sources_payload = [
+            {
+                "document_name": s.document_name,
+                "page_number": s.page_number,
+                "snippet": s.snippet,
+                "score": round(float(s.score), 3),
+            }
+            for s in sources
+        ]
+        sources_data = json.dumps(
+            {
+                "type": "sources",
+                "sources": sources_payload,
+            }
+        )
         yield f"data: {sources_data}\n\n"
-
-        # Signal completion
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(
@@ -68,6 +75,7 @@ async def query_documents_stream(request: QueryRequest):
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # important for nginx
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
         },
     )
